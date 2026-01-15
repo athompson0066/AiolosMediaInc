@@ -1,10 +1,10 @@
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Send, User, Bot, Loader2, Mic, MicOff, MessageSquare, Volume2, Square } from 'lucide-react';
-import { GoogleGenAI, LiveServerMessage, Modality } from '@google/genai';
-import { chatWithAgent } from '../services/geminiService';
-import { Message } from '../types';
+import { Send, User, Bot, Loader2, Mic, MicOff, MessageSquare, Volume2, Square, AlertCircle } from 'lucide-react';
+import { GoogleGenAI, LiveServerMessage, Modality, Blob } from '@google/genai';
+import { chatWithAgent } from '../services/geminiService.ts';
+import { Message } from '../types.ts';
 
 // Audio Helpers as per Gemini Live API requirements
 function encode(bytes: Uint8Array) {
@@ -45,6 +45,18 @@ async function decodeAudioData(
   return buffer;
 }
 
+function createBlob(data: Float32Array): Blob {
+  const l = data.length;
+  const int16 = new Int16Array(l);
+  for (let i = 0; i < l; i++) {
+    int16[i] = data[i] * 32768;
+  }
+  return {
+    data: encode(new Uint8Array(int16.buffer)),
+    mimeType: 'audio/pcm;rate=16000',
+  };
+}
+
 const ChatDemo: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'text' | 'voice'>('text');
   
@@ -82,7 +94,9 @@ const ChatDemo: React.FC = () => {
     setMessages(prev => [...prev, userMsg]);
     setInput('');
     setIsTyping(true);
+    
     const responseText = await chatWithAgent(text);
+    
     const assistantMsg: Message = { id: (Date.now() + 1).toString(), role: 'assistant', content: responseText, timestamp: Date.now() };
     setMessages(prev => [...prev, assistantMsg]);
     setIsTyping(false);
@@ -93,13 +107,18 @@ const ChatDemo: React.FC = () => {
       sessionRef.current.close();
       sessionRef.current = null;
     }
-    sourcesRef.current.forEach(s => s.stop());
+    
+    sourcesRef.current.forEach(s => {
+      try { s.stop(); } catch(e) {}
+    });
     sourcesRef.current.clear();
+    
     if (audioContextsRef.current) {
       audioContextsRef.current.input.close();
       audioContextsRef.current.output.close();
-      audioContextsRef.current.null;
+      audioContextsRef.current = null;
     }
+    
     setIsVoiceActive(false);
     setIsAgentSpeaking(false);
     setVoiceStatus('Ready to talk');
@@ -107,6 +126,12 @@ const ChatDemo: React.FC = () => {
 
   const startVoiceSession = async () => {
     try {
+      if (!process.env.API_KEY) {
+        setVoiceStatus('API Key Error');
+        console.error("Gemini Live: API_KEY is missing from environment.");
+        return;
+      }
+
       setVoiceStatus('Connecting...');
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       
@@ -119,21 +144,22 @@ const ChatDemo: React.FC = () => {
         model: 'gemini-2.5-flash-native-audio-preview-12-2025',
         callbacks: {
           onopen: () => {
+            console.debug('Live session connection established');
             setVoiceStatus('Listening...');
             setIsVoiceActive(true);
+            
             const source = inputCtx.createMediaStreamSource(stream);
             const scriptProcessor = inputCtx.createScriptProcessor(4096, 1, 1);
+            
             scriptProcessor.onaudioprocess = (e) => {
               const inputData = e.inputBuffer.getChannelData(0);
-              const l = inputData.length;
-              const int16 = new Int16Array(l);
-              for (let i = 0; i < l; i++) int16[i] = inputData[i] * 32768;
-              const pcmBlob = {
-                data: encode(new Uint8Array(int16.buffer)),
-                mimeType: 'audio/pcm;rate=16000',
-              };
-              sessionPromise.then(session => session.sendRealtimeInput({ media: pcmBlob }));
+              const pcmBlob = createBlob(inputData);
+              // Ensure sendRealtimeInput is only called after session resolves
+              sessionPromise.then(session => {
+                session.sendRealtimeInput({ media: pcmBlob });
+              });
             };
+            
             source.connect(scriptProcessor);
             scriptProcessor.connect(inputCtx.destination);
           },
@@ -142,41 +168,57 @@ const ChatDemo: React.FC = () => {
             if (base64Audio) {
               setIsAgentSpeaking(true);
               nextStartTimeRef.current = Math.max(nextStartTimeRef.current, outputCtx.currentTime);
+              
               const audioBuffer = await decodeAudioData(decode(base64Audio), outputCtx, 24000, 1);
               const source = outputCtx.createBufferSource();
               source.buffer = audioBuffer;
               source.connect(outputCtx.destination);
+              
               source.addEventListener('ended', () => {
                 sourcesRef.current.delete(source);
-                if (sourcesRef.current.size === 0) setIsAgentSpeaking(false);
+                if (sourcesRef.current.size === 0) {
+                  setIsAgentSpeaking(false);
+                }
               });
+              
               source.start(nextStartTimeRef.current);
               nextStartTimeRef.current += audioBuffer.duration;
               sourcesRef.current.add(source);
             }
+            
             if (message.serverContent?.interrupted) {
-              sourcesRef.current.forEach(s => s.stop());
+              sourcesRef.current.forEach(s => {
+                try { s.stop(); } catch(e) {}
+              });
               sourcesRef.current.clear();
               nextStartTimeRef.current = 0;
               setIsAgentSpeaking(false);
             }
           },
           onerror: (e) => {
-            console.error('Voice Error:', e);
+            console.error('Gemini Live API Error:', e);
+            setVoiceStatus('Session Error');
             stopVoiceSession();
           },
-          onclose: () => stopVoiceSession(),
+          onclose: (e) => {
+            console.debug('Gemini Live session closed', e);
+            stopVoiceSession();
+          },
         },
         config: {
           responseModalities: [Modality.AUDIO],
-          speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Zephyr' } } },
-          systemInstruction: 'You are Aiolos AI. You are helping a business owner explore AI agents for their local business. Be concise, persuasive, and friendly. Speak naturally.',
+          speechConfig: { 
+            voiceConfig: { 
+              prebuiltVoiceConfig: { voiceName: 'Zephyr' } 
+            } 
+          },
+          systemInstruction: 'You are Aiolos AI. Be concise, persuasive, and friendly. Speak naturally and help business owners understand how AI agents stop lead leaks.',
         }
       });
       sessionRef.current = await sessionPromise;
     } catch (err) {
-      console.error('Mic Access Error:', err);
-      setVoiceStatus('Mic access required');
+      console.error('Mic/Connection Error:', err);
+      setVoiceStatus('Check Microphone');
     }
   };
 
@@ -217,7 +259,7 @@ const ChatDemo: React.FC = () => {
             {/* Header */}
             <div className="p-4 bg-white/5 border-b border-white/10 flex items-center justify-between">
               <div className="flex items-center gap-3">
-                <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
+                <div className={`w-2 h-2 rounded-full animate-pulse ${isTyping ? 'bg-[#39FF14]' : 'bg-green-500'}`} />
                 <span className="font-semibold text-xs opacity-70">Aiolos Media Text Demo</span>
               </div>
             </div>
@@ -240,7 +282,7 @@ const ChatDemo: React.FC = () => {
                 <div className="flex justify-start">
                   <div className="flex gap-2 items-center glass px-4 py-2 rounded-2xl">
                     <Loader2 className="animate-spin text-[#39FF14]" size={16} />
-                    <span className="text-xs text-white/50">Typing...</span>
+                    <span className="text-xs text-white/50">Consulting AI...</span>
                   </div>
                 </div>
               )}
@@ -262,7 +304,13 @@ const ChatDemo: React.FC = () => {
                   placeholder="Ask the Text Agent..."
                   className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-[#39FF14]/50 transition-colors pr-12"
                 />
-                <button onClick={() => handleSendText()} className="absolute right-2 top-1/2 -translate-y-1/2 p-2 text-[#39FF14] hover:bg-[#39FF14]/10 rounded-lg transition-colors"><Send size={18} /></button>
+                <button 
+                  disabled={isTyping || !input.trim()}
+                  onClick={() => handleSendText()} 
+                  className="absolute right-2 top-1/2 -translate-y-1/2 p-2 text-[#39FF14] hover:bg-[#39FF14]/10 rounded-lg transition-colors disabled:opacity-30"
+                >
+                  <Send size={18} />
+                </button>
               </div>
             </div>
           </motion.div>
@@ -327,6 +375,13 @@ const ChatDemo: React.FC = () => {
                 {voiceStatus}
               </div>
             </div>
+
+            {voiceStatus === 'API Key Error' && (
+              <div className="mt-4 flex items-center gap-2 text-red-400 bg-red-400/10 p-3 rounded-xl text-xs">
+                <AlertCircle size={14} />
+                Ensure API_KEY is set in Vercel.
+              </div>
+            )}
           </motion.div>
         )}
       </AnimatePresence>

@@ -18,10 +18,17 @@ Keep responses concise (max 2-3 sentences).
 
 export const chatWithAgent = async (message: string) => {
   try {
+    // Instantiate right before the call to ensure the latest API key is used
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    
+    // Check if API key is present for easier debugging in the browser console
+    if (!process.env.API_KEY) {
+      console.warn("Gemini API: API_KEY is missing from process.env. If on Vercel, ensure it is set as an environment variable.");
+    }
+
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
-      contents: message,
+      contents: [{ parts: [{ text: message }] }],
       config: {
         systemInstruction: SYSTEM_INSTRUCTION,
         temperature: 0.7,
@@ -29,9 +36,12 @@ export const chatWithAgent = async (message: string) => {
       },
     });
     
-    return response.text || "I'm sorry, I'm having trouble connecting to my brain right now. Please try again!";
-  } catch (error) {
-    console.error("Gemini API Error:", error);
-    return "I'm currently in high demand! Try again in a second or reach out via our audit form below.";
+    return response.text || "I'm sorry, I couldn't generate a response. Please try again!";
+  } catch (error: any) {
+    console.error("Gemini API Text Error:", error);
+    if (error?.message?.includes("API_KEY_INVALID")) {
+      return "The API Key appears to be invalid. Please check your Vercel environment variables.";
+    }
+    return "I'm having trouble connecting to my brain right now. Please try again in a few seconds!";
   }
 };
