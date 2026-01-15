@@ -2,9 +2,9 @@
 import React from 'react';
 import { motion } from 'framer-motion';
 import { Bot, Zap, ShieldCheck, ArrowUpRight, Calculator, TrendingUp } from 'lucide-react';
-import ChatDemo from './components/ChatDemo';
-import PainPoints from './components/PainPoints';
-import LeadWizard from './components/LeadWizard';
+import ChatDemo from './components/ChatDemo.tsx';
+import PainPoints from './components/PainPoints.tsx';
+import LeadWizard from './components/LeadWizard.tsx';
 
 const App: React.FC = () => {
   return (
