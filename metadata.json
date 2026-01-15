@@ -1,0 +1,7 @@
+{
+  "name": "Aiolos Media - AI Automation for Local Business",
+  "description": "A high-converting B2B SaaS landing page for an agency that builds custom AI Voice & Text Agents, featuring a live interactive AI demo and a qualification wizard.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
